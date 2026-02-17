@@ -1,60 +1,77 @@
-name: Build and Push Docker Image to JFrog Artifactory
+name: Build and Push to JFrog Artifactory
 
 on:
   push:
     branches: [main]
     tags: ['v*']
-  pull_request:
-    branches: [main]
 
 env:
   IMAGE_NAME: docker-artifactory-demo
+  REGISTRY: ${{ secrets.ARTIFACTORY_URL }}
+  REPO: ${{ secrets.ARTIFACTORY_REPO }}
 
 jobs:
-  build-and-push:
+  docker-build-push:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout code
+      # Step 1: Get the code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      # Step 2: Determine image tag
+      - name: Set image tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="${GITHUB_SHA::7}"
+          fi
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+          echo "Using tag: $TAG"
 
-      - name: Extract metadata for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ secrets.ARTIFACTORY_URL }}/${{ secrets.ARTIFACTORY_REPO }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
+      # Step 3: Build the Docker image
+      - name: Build Docker image
+        run: |
+          echo "Building image: ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.TAG }}"
+          docker build -t ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.TAG }} .
+          docker tag ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.TAG }} ${{ env.IMAGE_NAME }}:latest
+          echo "✓ Build complete"
 
+      # Step 4: Login to Artifactory
       - name: Login to JFrog Artifactory
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.ARTIFACTORY_URL }}
-          username: ${{ secrets.ARTIFACTORY_USER }}
-          password: ${{ secrets.ARTIFACTORY_TOKEN }}
+        run: |
+          echo "Logging in to ${{ env.REGISTRY }}..."
+          echo "${{ secrets.ARTIFACTORY_TOKEN }}" | docker login ${{ env.REGISTRY }} \
+            --username ${{ secrets.ARTIFACTORY_USER }} \
+            --password-stdin
+          echo "✓ Login successful"
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            APP_VERSION=${{ github.ref_name }}
+      # Step 5: Tag images for Artifactory
+      - name: Tag images for Artifactory
+        run: |
+          FULL_IMAGE="${{ env.REGISTRY }}/${{ env.REPO }}/${{ env.IMAGE_NAME }}"
+          echo "Tagging for: $FULL_IMAGE"
+          
+          docker tag ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.TAG }} ${FULL_IMAGE}:${{ steps.tag.outputs.TAG }}
+          docker tag ${{ env.IMAGE_NAME }}:latest ${FULL_IMAGE}:latest
+          
+          echo "✓ Tagged: ${FULL_IMAGE}:${{ steps.tag.outputs.TAG }}"
+          echo "✓ Tagged: ${FULL_IMAGE}:latest"
 
-      - name: Image digest
-        if: github.event_name != 'pull_request'
-        run: echo "Image pushed with digest ${{ steps.build.outputs.digest }}"
+      # Step 6: Push to Artifactory
+      - name: Push to Artifactory
+        run: |
+          FULL_IMAGE="${{ env.REGISTRY }}/${{ env.REPO }}/${{ env.IMAGE_NAME }}"
+          
+          echo "Pushing ${FULL_IMAGE}:${{ steps.tag.outputs.TAG }}..."
+          docker push ${FULL_IMAGE}:${{ steps.tag.outputs.TAG }}
+          
+          echo "Pushing ${FULL_IMAGE}:latest..."
+          docker push ${FULL_IMAGE}:latest
+          
+          echo ""
+          echo "✅ Successfully pushed to Artifactory!"
+          echo "   Image: ${FULL_IMAGE}:${{ steps.tag.outputs.TAG }}"
+          echo "   Image: ${FULL_IMAGE}:latest"
