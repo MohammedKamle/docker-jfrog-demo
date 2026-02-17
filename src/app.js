@@ -3,7 +3,7 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Health check endpoint
+// Health check endpoint. commit 2
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
